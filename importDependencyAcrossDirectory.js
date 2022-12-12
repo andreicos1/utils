@@ -1,62 +1,93 @@
-// Add an internal dependency based on a root path
+const fs = require('fs')
+const path = require('path')
 
-let fs;
-try {
-  fs = require("graceful-fs");
-} catch {
-  fs = require("fs");
-}
-const path = require("path");
+const htmlTextRegex = /<[^>]*>(.*?)<\/[^>]*>/g
 
-const getPosition = (data, position) => {
-  switch (position) {
-    case 0:
-      return 0;
-    case 1:
-      return data.indexOf("\n\n");
-    case 2:
-      const firstLineBreakIdx = data.indexOf("\n\n");
-      return data.indexOf("\n\n", firstLineBreakIdx + 1);
+function replaceTextUInDirectory(wordReplacements, topDirectory) {
+  const wordsToBeReplaced = Object.keys(wordReplacements)
+
+  function getReplacement(string) {
+    return `{{ '${string}' | cxTranslate }}`
   }
-};
 
-const addDependencies = async (dependency, dependencyDirectory, position = 3) => {
-  const getAllImports = async (directory) => {
-    fs.readdir(directory, (err, files) => {
-      if (err) throw err;
-      files.forEach((file) => {
-        const fullPath = path.join(directory, file);
-        if (fullPath === __filename) return; // skip this file
-        const stats = fs.statSync(fullPath);
-        if (stats.isFile()) {
-          if (!file.match(/\.(ts|js|jsx|tsx)$/)) return;
-          fs.readFile(fullPath, "utf-8", (err, data) => {
-            if (err) throw err;
-            // Find if dependency in array
-            const dependencyIndex = data.indexOf(dependency);
-            // Find if already imported
-            const importDirectory = data.indexOf(dependencyDirectory);
-            if (dependencyIndex === -1 || importDirectory !== -1) return;
-            // Get index of first new line and add import there (for imports that belong in that group)
-            const positionIndex = getPosition(data, position);
-            const newData =
-              data.slice(0, positionIndex) +
-              `\nimport '${dependency} from ${dependencyDirectory}'` +
-              data.slice(positionIndex);
-            fs.writeFile(fullPath, newData, (err) => {
-              if (err) throw err;
-            });
-          });
-        } else {
-          getAllImports(fullPath);
-        }
-      });
-    });
-  };
-  await getAllImports(__dirname);
-};
+  function isValidFile() {
+    return file.endsWith('.html')
+  }
 
-const dependency = "";
-const dependencyDirectory = "";
+  function matchStringsBetweenTags(string) {
+    const regex = htmlTextRegex
+    const matches = []
 
-addDependencies(dependency, dependencyDirectory, 1);
+    let match = regex.exec(string)
+    while (match) {
+      matches.push(match[1])
+      match = regex.exec(string)
+    }
+
+    return matches
+  }
+
+  function intersection(arr1, arr2) {
+    // Create a set from the second array to improve performance
+    const set = new Set(arr2.map((x) => x.toLowerCase()))
+
+    // Use filter() to only keep the elements that exist in both arrays,
+    // after converting them to lower case to ignore the case
+    return arr1.filter((x) => set.has(x.toLowerCase()))
+  }
+
+  function readDirectoryRecursive(dir) {
+    fs.readdirSync(dir).forEach((file) => {
+      const filePath = path.join(dir, file)
+      const fileStat = fs.statSync(filePath)
+
+      if (fileStat.isDirectory()) {
+        // Recursively read files in subdirectory
+        return readDirectoryRecursive(filePath)
+      }
+
+      if (!isValidFile()) return
+
+      const fileContent = fs.readFileSync(filePath, 'utf8')
+      // Get matches
+      const matches = matchStringsBetweenTags(fileContent)
+      // Get words to be replaced and case insensitive reges
+      const wordsFoundForReplacement = intersection(wordsToBeReplaced, matches)
+      if (!wordsFoundForReplacement?.length) return
+      const regexes = wordsFoundForReplacement.map((word) => new RegExp(word, 'gi'))
+
+      // Replace
+      const newData = regexes.reduce((result, regex, index) => {
+        // Get replacement text
+        const key = wordsFoundForReplacement[index]
+        const replacement = getReplacement(wordReplacements[key])
+
+        // Get all inner html content
+        const matches = result.match(htmlTextRegex)
+        return matches
+          .map((match) => {
+            // Match the text and replace it with the replacement string
+            const replaced = match.replace(regex, replacement)
+            return result.replace(match, replaced)
+          })
+          .join('')
+      }, fileContent)
+
+      fs.writeFile(filePath, newData, (err) => {
+        if (err) throw err
+      })
+    })
+  }
+
+  readDirectoryRecursive(topDirectory)
+}
+
+// Example:
+
+const wordReplacements = {
+  'An example': 'lala.anExample',
+  Save: 'save.save',
+  div: 'div.div',
+}
+
+replaceTextUInDirectory(wordReplacements, __dirname)
